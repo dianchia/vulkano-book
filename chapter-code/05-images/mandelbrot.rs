@@ -8,11 +8,9 @@ use std::sync::Arc;
 use image::{ImageBuffer, Rgba};
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
-use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo,
-};
+use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo};
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
-use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
+use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
 use vulkano::device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags};
 use vulkano::format::Format;
 use vulkano::image::view::ImageView;
@@ -21,21 +19,16 @@ use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
 use vulkano::pipeline::compute::ComputePipelineCreateInfo;
 use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
-use vulkano::pipeline::{
-    ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo,
-};
+use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo};
 use vulkano::sync::{self, GpuFuture};
 
 pub fn main() {
     let library = vulkano::VulkanLibrary::new().expect("no local Vulkan library/DLL");
-    let instance = Instance::new(
-        library,
-        InstanceCreateInfo {
-            flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
-            ..Default::default()
-        },
-    )
-    .expect("failed to create instance");
+    let instance = {
+        let create_info =
+            InstanceCreateInfo { flags: InstanceCreateFlags::ENUMERATE_PORTABILITY, ..Default::default() };
+        Instance::new(library, create_info).expect("failed to create instance")
+    };
 
     let physical = instance
         .enumerate_physical_devices()
@@ -50,18 +43,11 @@ pub fn main() {
         .position(|(_, q)| q.queue_flags.contains(QueueFlags::GRAPHICS))
         .expect("couldn't find a graphical queue family") as u32;
 
-    let (device, mut queues) = Device::new(
-        physical,
-        DeviceCreateInfo {
-            queue_create_infos: vec![QueueCreateInfo {
-                queue_family_index,
-                ..Default::default()
-            }],
-            ..Default::default()
-        },
-    )
-    .expect("failed to create device");
-
+    let (device, mut queues) = {
+        let queue_create_infos = vec![QueueCreateInfo { queue_family_index, ..Default::default() }];
+        let create_info = DeviceCreateInfo { queue_create_infos, ..Default::default() };
+        Device::new(physical, create_info).expect("failed to create device")
+    };
     let queue = queues.next().unwrap();
 
     mod cs {
@@ -103,73 +89,60 @@ pub fn main() {
 
     let cs = shader.entry_point("main").unwrap();
     let stage = PipelineShaderStageCreateInfo::new(cs);
-    let layout = PipelineLayout::new(
-        device.clone(),
-        PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
+    let layout = {
+        let create_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
             .into_pipeline_layout_create_info(device.clone())
-            .unwrap(),
-    )
-    .unwrap();
+            .unwrap();
+        PipelineLayout::new(device.clone(), create_info).unwrap()
+    };
 
-    let compute_pipeline = ComputePipeline::new(
-        device.clone(),
-        None,
-        ComputePipelineCreateInfo::stage_layout(stage, layout),
-    )
-    .expect("failed to create compute pipeline");
+    let compute_pipeline = {
+        let create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
+        ComputePipeline::new(device.clone(), None, create_info).expect("failed to create compute pipeline")
+    };
 
     let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
-    let image = Image::new(
-        memory_allocator.clone(),
-        ImageCreateInfo {
+    let image = {
+        let create_info = ImageCreateInfo {
             image_type: ImageType::Dim2d,
             format: Format::R8G8B8A8_UNORM,
             extent: [1024, 1024, 1],
             usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_SRC,
             ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+        };
+        let allocation_info =
+            AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE, ..Default::default() };
+        Image::new(memory_allocator.clone(), create_info, allocation_info).unwrap()
+    };
 
     let view = ImageView::new_default(image.clone()).unwrap();
 
-    let descriptor_set_allocator =
-        StandardDescriptorSetAllocator::new(device.clone(), Default::default());
+    let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(device.clone(), Default::default()));
 
     let layout = compute_pipeline.layout().set_layouts().get(0).unwrap();
-    let set = PersistentDescriptorSet::new(
-        &descriptor_set_allocator,
+    let set = DescriptorSet::new(
+        descriptor_set_allocator.clone(),
         layout.clone(),
         [WriteDescriptorSet::image_view(0, view)], // 0 is the binding
         [],
     )
     .unwrap();
 
-    let buf = Buffer::from_iter(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_DST,
+    let buf = {
+        let create_info = BufferCreateInfo { usage: BufferUsage::TRANSFER_DST, ..Default::default() };
+        let allocation_info = AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_RANDOM_ACCESS,
             ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                | MemoryTypeFilter::HOST_RANDOM_ACCESS,
-            ..Default::default()
-        },
-        (0..1024 * 1024 * 4).map(|_| 0u8),
-    )
-    .expect("failed to create buffer");
+        };
+        Buffer::from_iter(memory_allocator.clone(), create_info, allocation_info, (0..1024 * 1024 * 4).map(|_| 0u8))
+            .expect("failed to create buffer")
+    };
 
-    let command_buffer_allocator =
-        StandardCommandBufferAllocator::new(device.clone(), Default::default());
+    let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(device.clone(), Default::default()));
 
     let mut builder = AutoCommandBufferBuilder::primary(
-        &command_buffer_allocator,
+        command_buffer_allocator.clone(),
         queue.queue_family_index(),
         CommandBufferUsage::OneTimeSubmit,
     )
@@ -177,25 +150,16 @@ pub fn main() {
     builder
         .bind_pipeline_compute(compute_pipeline.clone())
         .unwrap()
-        .bind_descriptor_sets(
-            PipelineBindPoint::Compute,
-            compute_pipeline.layout().clone(),
-            0,
-            set,
-        )
-        .unwrap()
-        .dispatch([1024 / 8, 1024 / 8, 1])
-        .unwrap()
-        .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(image, buf.clone()))
+        .bind_descriptor_sets(PipelineBindPoint::Compute, compute_pipeline.layout().clone(), 0, set)
         .unwrap();
+    unsafe {
+        builder.dispatch([1024 / 8, 1024 / 8, 1]).unwrap();
+    }
+    builder.copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(image, buf.clone())).unwrap();
 
     let command_buffer = builder.build().unwrap();
 
-    let future = sync::now(device)
-        .then_execute(queue, command_buffer)
-        .unwrap()
-        .then_signal_fence_and_flush()
-        .unwrap();
+    let future = sync::now(device).then_execute(queue, command_buffer).unwrap().then_signal_fence_and_flush().unwrap();
 
     future.wait(None).unwrap();
 

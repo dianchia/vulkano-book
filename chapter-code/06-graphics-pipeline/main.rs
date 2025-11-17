@@ -8,8 +8,8 @@ use image::{ImageBuffer, Rgba};
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, RenderPassBeginInfo,
-    SubpassBeginInfo, SubpassContents,
+    AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, RenderPassBeginInfo, SubpassBeginInfo,
+    SubpassContents,
 };
 use vulkano::device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags};
 use vulkano::format::Format;
@@ -17,13 +17,13 @@ use vulkano::image::view::ImageView;
 use vulkano::image::{Image, ImageCreateInfo, ImageType, ImageUsage};
 use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
+use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
 use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
-use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
 use vulkano::pipeline::{GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, Subpass};
@@ -31,14 +31,11 @@ use vulkano::sync::{self, GpuFuture};
 
 fn main() {
     let library = vulkano::VulkanLibrary::new().expect("no local Vulkan library/DLL");
-    let instance = Instance::new(
-        library,
-        InstanceCreateInfo {
-            flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
-            ..Default::default()
-        },
-    )
-    .expect("failed to create instance");
+    let instance = {
+        let create_info =
+            InstanceCreateInfo { flags: InstanceCreateFlags::ENUMERATE_PORTABILITY, ..Default::default() };
+        Instance::new(library, create_info).expect("failed to create instance")
+    };
 
     let physical = instance
         .enumerate_physical_devices()
@@ -53,52 +50,37 @@ fn main() {
         .position(|(_, q)| q.queue_flags.contains(QueueFlags::GRAPHICS))
         .expect("couldn't find a graphical queue family") as u32;
 
-    let (device, mut queues) = Device::new(
-        physical,
-        DeviceCreateInfo {
-            queue_create_infos: vec![QueueCreateInfo {
-                queue_family_index,
-                ..Default::default()
-            }],
-            ..Default::default()
-        },
-    )
-    .expect("failed to create device");
-
+    let (device, mut queues) = {
+        let queue_create_infos = vec![QueueCreateInfo { queue_family_index, ..Default::default() }];
+        let create_info = DeviceCreateInfo { queue_create_infos, ..Default::default() };
+        Device::new(physical, create_info).expect("failed to create device")
+    };
     let queue = queues.next().unwrap();
 
-    let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+    let mem_alloc = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
-    let image = Image::new(
-        memory_allocator.clone(),
-        ImageCreateInfo {
+    let image = {
+        let create_info = ImageCreateInfo {
             image_type: ImageType::Dim2d,
             format: Format::R8G8B8A8_UNORM,
             extent: [1024, 1024, 1],
             usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_SRC,
             ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+        };
+        let allocation_info =
+            AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE, ..Default::default() };
+        Image::new(mem_alloc.clone(), create_info, allocation_info).unwrap()
+    };
 
-    let buf = Buffer::from_iter(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_DST,
+    let buf = {
+        let create_info = BufferCreateInfo { usage: BufferUsage::TRANSFER_DST, ..Default::default() };
+        let allocation_info = AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_RANDOM_ACCESS,
             ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                | MemoryTypeFilter::HOST_RANDOM_ACCESS,
-            ..Default::default()
-        },
-        (0..1024 * 1024 * 4).map(|_| 0u8),
-    )
-    .expect("failed to create buffer");
+        };
+        Buffer::from_iter(mem_alloc.clone(), create_info, allocation_info, (0..1024 * 1024 * 4).map(|_| 0u8))
+            .expect("failed to create buffer")
+    };
 
     #[derive(BufferContents, Vertex)]
     #[repr(C)]
@@ -107,29 +89,17 @@ fn main() {
         position: [f32; 2],
     }
 
-    let vertex1 = MyVertex {
-        position: [-0.5, -0.5],
-    };
-    let vertex2 = MyVertex {
-        position: [0.0, 0.5],
-    };
-    let vertex3 = MyVertex {
-        position: [0.5, -0.25],
-    };
-    let vertex_buffer = Buffer::from_iter(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::VERTEX_BUFFER,
+    let vertex1 = MyVertex { position: [-0.5, -0.5] };
+    let vertex2 = MyVertex { position: [0.0, 0.5] };
+    let vertex3 = MyVertex { position: [0.5, -0.25] };
+    let vertex_buffer = {
+        let create_info = BufferCreateInfo { usage: BufferUsage::VERTEX_BUFFER, ..Default::default() };
+        let allocation_info = AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
-        },
-        vec![vertex1, vertex2, vertex3],
-    )
-    .unwrap();
+        };
+        Buffer::from_iter(mem_alloc.clone(), create_info, allocation_info, vec![vertex1, vertex2, vertex3]).unwrap()
+    };
 
     let render_pass = vulkano::single_pass_renderpass!(device.clone(),
         attachments: {
@@ -148,14 +118,10 @@ fn main() {
     .unwrap();
 
     let view = ImageView::new_default(image.clone()).unwrap();
-    let framebuffer = Framebuffer::new(
-        render_pass.clone(),
-        FramebufferCreateInfo {
-            attachments: vec![view],
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let framebuffer = {
+        let create_info = FramebufferCreateInfo { attachments: vec![view], ..Default::default() };
+        Framebuffer::new(render_pass.clone(), create_info).unwrap()
+    };
 
     mod vs {
         vulkano_shaders::shader! {
@@ -190,64 +156,46 @@ fn main() {
     let vs = vs::load(device.clone()).expect("failed to create shader module");
     let fs = fs::load(device.clone()).expect("failed to create shader module");
 
-    let viewport = Viewport {
-        offset: [0.0, 0.0],
-        extent: [1024.0, 1024.0],
-        depth_range: 0.0..=1.0,
-    };
+    let viewport = Viewport { offset: [0.0, 0.0], extent: [1024.0, 1024.0], depth_range: 0.0..=1.0 };
 
     let pipeline = {
         let vs = vs.entry_point("main").unwrap();
         let fs = fs.entry_point("main").unwrap();
 
-        let vertex_input_state = MyVertex::per_vertex()
-            .definition(&vs.info().input_interface)
-            .unwrap();
+        let vertex_input_state = MyVertex::per_vertex().definition(&vs).unwrap();
 
-        let stages = [
-            PipelineShaderStageCreateInfo::new(vs),
-            PipelineShaderStageCreateInfo::new(fs),
-        ];
+        let stages = [PipelineShaderStageCreateInfo::new(vs), PipelineShaderStageCreateInfo::new(fs)];
 
-        let layout = PipelineLayout::new(
-            device.clone(),
-            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+        let layout = {
+            let create_info = PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
                 .into_pipeline_layout_create_info(device.clone())
-                .unwrap(),
-        )
-        .unwrap();
+                .unwrap();
+            PipelineLayout::new(device.clone(), create_info).unwrap()
+        };
 
         let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
 
-        GraphicsPipeline::new(
-            device.clone(),
-            None,
-            GraphicsPipelineCreateInfo {
-                stages: stages.into_iter().collect(),
-                vertex_input_state: Some(vertex_input_state),
-                input_assembly_state: Some(InputAssemblyState::default()),
-                viewport_state: Some(ViewportState {
-                    viewports: [viewport].into_iter().collect(),
-                    ..Default::default()
-                }),
-                rasterization_state: Some(RasterizationState::default()),
-                multisample_state: Some(MultisampleState::default()),
-                color_blend_state: Some(ColorBlendState::with_attachment_states(
-                    subpass.num_color_attachments(),
-                    ColorBlendAttachmentState::default(),
-                )),
-                subpass: Some(subpass.into()),
-                ..GraphicsPipelineCreateInfo::layout(layout)
-            },
-        )
-        .unwrap()
+        let create_info = GraphicsPipelineCreateInfo {
+            stages: stages.into_iter().collect(),
+            vertex_input_state: Some(vertex_input_state),
+            input_assembly_state: Some(InputAssemblyState::default()),
+            viewport_state: Some(ViewportState { viewports: [viewport].into_iter().collect(), ..Default::default() }),
+            rasterization_state: Some(RasterizationState::default()),
+            multisample_state: Some(MultisampleState::default()),
+            color_blend_state: Some(ColorBlendState::with_attachment_states(
+                subpass.num_color_attachments(),
+                ColorBlendAttachmentState::default(),
+            )),
+            subpass: Some(subpass.into()),
+            ..GraphicsPipelineCreateInfo::layout(layout)
+        };
+        GraphicsPipeline::new(device.clone(), None, create_info).unwrap()
     };
 
-    let command_buffer_allocator =
-        StandardCommandBufferAllocator::new(device.clone(), Default::default());
+    let cmd_alloc = Arc::new(StandardCommandBufferAllocator::new(device.clone(), Default::default()));
 
     let mut builder = AutoCommandBufferBuilder::primary(
-        &command_buffer_allocator,
+        cmd_alloc.clone(),
         queue.queue_family_index(),
         CommandBufferUsage::OneTimeSubmit,
     )
@@ -259,20 +207,18 @@ fn main() {
                 clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
                 ..RenderPassBeginInfo::framebuffer(framebuffer)
             },
-            SubpassBeginInfo {
-                contents: SubpassContents::Inline,
-                ..Default::default()
-            },
+            SubpassBeginInfo { contents: SubpassContents::Inline, ..Default::default() },
         )
         .unwrap()
         .bind_pipeline_graphics(pipeline)
         .unwrap()
         .bind_vertex_buffers(0, vertex_buffer)
-        .unwrap()
-        .draw(
-            3, 1, 0, 0, // 3 is the number of vertices, 1 is the number of instances
-        )
-        .unwrap()
+        .unwrap();
+    unsafe {
+        // 3 is the number of vertices, 1 is the number of instances
+        builder.draw(3, 1, 0, 0).unwrap();
+    }
+    builder
         .end_render_pass(Default::default())
         .unwrap()
         .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(image, buf.clone()))
@@ -280,11 +226,7 @@ fn main() {
 
     let command_buffer = builder.build().unwrap();
 
-    let future = sync::now(device)
-        .then_execute(queue, command_buffer)
-        .unwrap()
-        .then_signal_fence_and_flush()
-        .unwrap();
+    let future = sync::now(device).then_execute(queue, command_buffer).unwrap().then_signal_fence_and_flush().unwrap();
     future.wait(None).unwrap();
 
     let buffer_content = buf.read().unwrap();

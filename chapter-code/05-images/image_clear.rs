@@ -20,14 +20,11 @@ use vulkano::sync::GpuFuture;
 
 pub fn main() {
     let library = vulkano::VulkanLibrary::new().expect("no local Vulkan library/DLL");
-    let instance = Instance::new(
-        library,
-        InstanceCreateInfo {
-            flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
-            ..Default::default()
-        },
-    )
-    .expect("failed to create instance");
+    let instance = {
+        let create_info =
+            InstanceCreateInfo { flags: InstanceCreateFlags::ENUMERATE_PORTABILITY, ..Default::default() };
+        Instance::new(library, create_info).expect("failed to create instance")
+    };
 
     let physical = instance
         .enumerate_physical_devices()
@@ -42,58 +39,42 @@ pub fn main() {
         .position(|(_, q)| q.queue_flags.contains(QueueFlags::GRAPHICS))
         .expect("couldn't find a graphical queue family") as u32;
 
-    let (device, mut queues) = Device::new(
-        physical,
-        DeviceCreateInfo {
-            queue_create_infos: vec![QueueCreateInfo {
-                queue_family_index,
-                ..Default::default()
-            }],
-            ..Default::default()
-        },
-    )
-    .expect("failed to create device");
-
+    let (device, mut queues) = {
+        let queue_create_infos = vec![QueueCreateInfo { queue_family_index, ..Default::default() }];
+        let create_info = DeviceCreateInfo { queue_create_infos, ..Default::default() };
+        Device::new(physical, create_info).expect("failed to create device")
+    };
     let queue = queues.next().unwrap();
 
-    let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-    let command_buffer_allocator =
-        StandardCommandBufferAllocator::new(device.clone(), Default::default());
+    let mem_alloc = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+    let cmd_alloc = Arc::new(StandardCommandBufferAllocator::new(device.clone(), Default::default()));
 
     // Image creation
-    let image = Image::new(
-        memory_allocator.clone(),
-        ImageCreateInfo {
+    let image = {
+        let create_info = ImageCreateInfo {
             image_type: ImageType::Dim2d,
             format: Format::R8G8B8A8_UNORM,
             extent: [1024, 1024, 1],
             usage: ImageUsage::TRANSFER_DST | ImageUsage::TRANSFER_SRC,
             ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+        };
+        let allocation_info =
+            AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE, ..Default::default() };
+        Image::new(mem_alloc.clone(), create_info, allocation_info).unwrap()
+    };
 
-    let buf = Buffer::from_iter(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_DST,
+    let buf = {
+        let create_info = BufferCreateInfo { usage: BufferUsage::TRANSFER_DST, ..Default::default() };
+        let allocation_info = AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_RANDOM_ACCESS,
             ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                | MemoryTypeFilter::HOST_RANDOM_ACCESS,
-            ..Default::default()
-        },
-        (0..1024 * 1024 * 4).map(|_| 0u8),
-    )
-    .expect("failed to create buffer");
+        };
+        let iter = (0..1024 * 1024 * 4).map(|_| 0u8);
+        Buffer::from_iter(mem_alloc.clone(), create_info, allocation_info, iter).expect("failed to create buffer")
+    };
 
     let mut builder = AutoCommandBufferBuilder::primary(
-        &command_buffer_allocator,
+        cmd_alloc.clone(),
         queue.queue_family_index(),
         CommandBufferUsage::OneTimeSubmit,
     )
@@ -108,11 +89,7 @@ pub fn main() {
         .unwrap();
     let command_buffer = builder.build().unwrap();
 
-    let future = sync::now(device)
-        .then_execute(queue, command_buffer)
-        .unwrap()
-        .then_signal_fence_and_flush()
-        .unwrap();
+    let future = sync::now(device).then_execute(queue, command_buffer).unwrap().then_signal_fence_and_flush().unwrap();
 
     future.wait(None).unwrap();
 

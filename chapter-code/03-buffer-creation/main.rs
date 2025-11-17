@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use vulkano::VulkanLibrary;
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo};
@@ -11,19 +12,15 @@ use vulkano::device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags};
 use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
 use vulkano::sync::{self, GpuFuture};
-use vulkano::VulkanLibrary;
 
 fn main() {
     // Initialization
     let library = VulkanLibrary::new().expect("no local Vulkan library/DLL");
-    let instance = Instance::new(
-        library,
-        InstanceCreateInfo {
-            flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
-            ..Default::default()
-        },
-    )
-    .expect("failed to create instance");
+    let instance = {
+        let create_info =
+            InstanceCreateInfo { flags: InstanceCreateFlags::ENUMERATE_PORTABILITY, ..Default::default() };
+        Instance::new(library, create_info).expect("failed to create instance")
+    };
 
     let physical_device = instance
         .enumerate_physical_devices()
@@ -39,69 +36,49 @@ fn main() {
         .position(|(_, q)| q.queue_flags.contains(QueueFlags::GRAPHICS))
         .expect("couldn't find a graphical queue family") as u32;
 
-    let (device, mut queues) = Device::new(
-        physical_device,
-        DeviceCreateInfo {
-            // here we pass the desired queue family to use by index
-            queue_create_infos: vec![QueueCreateInfo {
-                queue_family_index,
-                ..Default::default()
-            }],
-            ..Default::default()
-        },
-    )
-    .expect("failed to create device");
-
+    let (device, mut queues) = {
+        // here we pass the desired queue family to use by index
+        let queue_create_infos = vec![QueueCreateInfo { queue_family_index, ..Default::default() }];
+        let create_info = DeviceCreateInfo { queue_create_infos, ..Default::default() };
+        Device::new(physical_device, create_info).expect("failed to create device")
+    };
     let queue = queues.next().unwrap();
 
     let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
     // Example operation
     let source_content: Vec<i32> = (0..64).collect();
-    let source = Buffer::from_iter(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_SRC,
+    let source = {
+        let create_info = BufferCreateInfo { usage: BufferUsage::TRANSFER_SRC, ..Default::default() };
+        let allocation_info = AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
-        },
-        source_content,
-    )
-    .expect("failed to create source buffer");
+        };
+        Buffer::from_iter(memory_allocator.clone(), create_info, allocation_info, source_content)
+            .expect("failed to create source buffer")
+    };
 
     let destination_content: Vec<i32> = (0..64).map(|_| 0).collect();
-    let destination = Buffer::from_iter(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_DST,
+    let destination = {
+        let create_info = BufferCreateInfo { usage: BufferUsage::TRANSFER_DST, ..Default::default() };
+        let allocation_info = AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_RANDOM_ACCESS,
             ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                | MemoryTypeFilter::HOST_RANDOM_ACCESS,
-            ..Default::default()
-        },
-        destination_content,
-    )
-    .expect("failed to create destination buffer");
+        };
+        Buffer::from_iter(memory_allocator.clone(), create_info, allocation_info, destination_content)
+            .expect("failed to create destination buffer")
+    };
 
-    let command_buffer_allocator =
-        StandardCommandBufferAllocator::new(device.clone(), Default::default());
+    let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(device.clone(), Default::default()));
 
     let mut builder = AutoCommandBufferBuilder::primary(
-        &command_buffer_allocator,
+        command_buffer_allocator.clone(),
         queue_family_index,
         CommandBufferUsage::OneTimeSubmit,
     )
     .unwrap();
 
-    builder
-        .copy_buffer(CopyBufferInfo::buffers(source.clone(), destination.clone()))
-        .unwrap();
+    builder.copy_buffer(CopyBufferInfo::buffers(source.clone(), destination.clone())).unwrap();
 
     let command_buffer = builder.build().unwrap();
 
